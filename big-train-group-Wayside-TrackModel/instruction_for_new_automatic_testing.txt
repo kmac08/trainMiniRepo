@@ -1,0 +1,17 @@
+Train System will need to show automatic testing. 
+
+What needs to be done?
+When we get to the edge of one block, we send in the information of a new block with new block entered variable flipped and appropriate next station number that is provided in a text file called automatic_testing_for_train_system.json
+
+Since we have no way of knowing we are at the edge of a block, lets make a temporary output from train controller to train model saying edge_of_current_block: bool. It should turn on when the train gets to the edge of the current block and waiting for the entered next block variable to flip.
+
+Lets get  this temporary thing (add comments saying should be removed after iteration 3: using only for simulating track) to become true whenever train controller thinks train is at the edge of the current block. 
+
+So for the track circuit testing, lets make it so we have an option/toggle which we can turn to auto and when in auto it just inputs the Block Number, Commanded Speed, Authority, New Block Flag, Next Block Entered, Update Block in Queue, and Station Number automatically from the json file which will have the block numbers as the key and value would be block number, commanded speed, authority, new block flag, next block entered, update block in queue, station number. These will be in decimal form so make sure to make it binary as needed by track circuit test UI and send but also visible in that track circuit test UI like it is auto-filling and clicking send to train system as soon as train gets to the edge.
+
+When toggled in manual just leave it to be however it is right now. 
+
+Station might be little weird because in the station it will first stop in the middle then after 60 seconds it will start again but after the 60 seconds a flag will be true coming out to train model, so use that as an indicator to send next command from json as well. This will be updating the station number.
+
+So send the next command from json simulating track circuit every time, it is at the edge of a block, or the stopped at a station for 60 seconds variable goes from false to true (if it remains true then dont keep sending commands as it will remain true the entire second half of the station block).
+ 

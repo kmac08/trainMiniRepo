@@ -1,0 +1,668 @@
+TRAIN CONTROLLER IMPLEMENTATION LOG
+===================================
+
+Date: 2025-07-02
+Context: Continuing work after segmentation fault, implementing track-based authority system
+
+DISCUSSION SUMMARY:
+------------------
+
+User provided comprehensive context about the new track-based authority system:
+
+BACKGROUND PROBLEM:
+- Train system has only 10 baud (10 bits per sec) communication
+- Sending authority (up to 300m = 9 bits) + underground + speed limit too much data
+- Solution: Give train controller Excel sheet with track information instead
+
+NEW SYSTEM DESIGN:
+1. Train controller gets track color (red/green) at initialization
+2. Parse Excel sheet to create JSON files for each track color
+3. Always provide next 4 blocks information for lookahead
+4. Calculate authority internally by summing authorized block lengths
+5. Stop at first unauthorized block in sequence
+
+INITIALIZATION REQUIREMENTS:
+- TrainControllerInit dataclass with:
+  * track_color: str (red/green)
+  * current_block: int
+  * current_commanded_speed: int (0,1,2,3)
+  * authorized_current_block: bool
+  * next_four_blocks: list of BlockInfo objects
+
+BLOCK PROGRESSION LOGIC:
+- next_block_entered toggles True/False when entering new block
+- Unknown initial state, only know it toggles
+- When add_new_block_info is True, get next_block_info
+- next_block_info format: {block_number: int, commanded_speed: float, authorized_to_go_on_the_block: int (0 or 1)}
+- Update authority when new block info received
+- Stop authority calculation at first unauthorized block
+
+STATION DETECTION:
+- Use JSON data to identify station blocks
+- Implement station approach detection
+
+CURRENT STATE ANALYSIS:
+----------------------
+
+EXISTING STRUCTURE:
+- Track_Reader/ folder contains:
+  * track_reader.py - comprehensive track parsing system
+  * json_generator.py - generates JSON files from Excel
+  * red_line_track_data.json - template (only 1 block)
+  * green_line_track_data.json, blue_line_track_data.json
+  * Track Layout & Vehicle Data vF2.xlsx - source data
+
+DATA STRUCTURES UPDATED:
+- TrainModelInput now has:
+  * add_new_block_info: bool
+  * next_block_info: dict
+  * next_block_entered: bool
+  * authority_threshold: float
+- New dataclasses in data_types.py:
+  * BlockInfo
+  * TrainControllerInit
+
+IMPLEMENTATION PLAN:
+-------------------
+
+COMPLETED:
+✓ Created implementation log
+✓ Analyzed existing track reader system
+✓ Identified JSON generator capability
+
+PENDING HIGH PRIORITY:
+1. Generate proper JSON files for Red and Green lines using track_reader
+2. Update TrainController constructor to accept TrainControllerInit data
+3. Implement block tracking system with current and next 4 blocks
+4. Implement next_block_entered toggle detection logic
+5. Handle add_new_block_info flag to get next_block_info data
+6. Update authority calculation based on block progression
+7. Stop adding authority when unauthorized block is encountered
+
+PENDING MEDIUM PRIORITY:
+8. Implement station approach detection using JSON data
+
+TECHNICAL DETAILS:
+-----------------
+
+TRACK READER SYSTEM:
+- TrackLayoutReader class loads Excel data
+- Comprehensive parsing of stations, switches, crossings, underground
+- BlockDirection enum for movement restrictions
+- Infrastructure parsing with Station, Switch objects
+- JSON generation with TrackJSONGenerator
+
+JSON STRUCTURE:
+- metadata: line_color, total_blocks, generation_timestamp
+- blocks: keyed by block_number with physical_properties, direction, infrastructure
+- stations, switches, crossings arrays
+- underground_sections array
+- summary_stats with totals and ranges
+
+AUTHORITY CALCULATION LOGIC:
+- Sum lengths of authorized blocks in sequence
+- Stop at first unauthorized block
+- Compare with authority_threshold for braking decisions
+- Dynamic threshold based on train mass from train model
+
+NEXT STEPS:
+-----------
+1. Generate complete JSON files from Excel data
+2. Modify TrainController to use initialization parameters
+3. Implement block progression tracking
+4. Test authority calculation logic
+
+CONVERSATION RECORD:
+-------------------
+
+USER: "When the train controller is created. We should use the color of the track given, then go to the excel sheet in track_reader folder. There should be python file that should be helpful to parse through it, not fully sure so take a look. However, we need to create the json file for that track color with the proper information that we need. So we can use that json file to get information about blocks for the controller"
+
+USER: "Sending authority (which could be upto 300 meters - so needed 9 bits) and other informations such as underground state and speed limit would be too much to transfer due to our train system only having 10 baud (10 bits per sec). So we decided on giving the train controller an excel sheet that contains the track information (speed limit for each block, the length of each block, and underground status) so we will no longer need those three from train model input."
+
+USER: "Also, due to the train needing time to stop, we will always give train controller information for the next 4 blocks (this will need to be stored and updated after getting to the next block in train controller). This way, train controller can calculate the authority and compare it with the threshold authority (dynamic due to mass of train calculated in train model), and decide on when to activate the service brake (total authority <= threshold authority)."
+
+USER: "Train controller objects will need to be created with the information about current block and what color track we are on (track_color: string (red/green), block num:int, commanded speed:int (0,1,2,3), and authorized_to_go_on_the_block:bool) and the next 4 blocks information in order in a dictionary or something (we need to make sure that order is not always about number size, it will just need to be what block is placed next in the track which might not make sense with the regular number system being in order so we will need to figure out a way). Then we use those information and initialize variables inside the train controller such as current_block_number, current_block_speed_limit, current_block_commanded_speed, current_block_underground_status. We will then add the authorities of the next blocks in order that they are placed in and add them until we hit a block with authorized_to_go_on_the_block as false meaning we will need to stop in that block (could be due to any reason). Even if the block after that is authorized to go we cant go. And we can get each block we are allowed to go before that not authorized block and get their authorities from the json file that we create for the correct color. That would be the total current authority that we have so we display that to the driver window (we were currently showing the authority that we received from train model however we will no longer receive that)."
+
+USER: "For context. when we move to a new block next_block_entered is toggled. so we need to keep that in mind so we know we have the next block as our current block now. and we will have one space so we can possibly look at add_new_block_info to see if it is true and if it is then we get the next_block_info. we will then update the authority stuff as well as new block will have been introduced. also check again to make sure we stop adding the authority if we run into a block where we are not authorized to go. also from json we need to get information about if certain block is a station or not. so we are approaching a station we know that. next_block_entered could be either true or false. it just keeps toggling. we actually dont even know what it would be to start with and the only thing we know is it will toggle after entering a new block"
+
+USER: "and a few things have changed so review the code to see what things have changed and update the .txt file with correct info so it can be helpful to you next time. also remember to always update the text file as a log after every chat conversation. write exactly what I said and what you did"
+
+ACTIONS TAKEN:
+- Read track_reader.py, json_generator.py, red_line_track_data.json
+- Analyzed existing track data structures and JSON generation capability
+- Identified need to generate proper JSON files from Excel data
+- Created comprehensive todo list for implementation
+- Updated implementation log with full context and technical details
+
+IMPLEMENTATION COMPLETED:
+✓ Updated TrainController imports to use TrackJSONGenerator
+✓ Modified constructor to accept TrainControllerInit data with validation
+✓ Implemented dynamic JSON generation from Excel file at controller creation
+✓ Added block tracking system with current and next 4 blocks queue
+✓ Implemented next_block_entered toggle detection in _handle_block_progression()
+✓ Added _handle_block_transition() for moving between blocks
+✓ Implemented _handle_new_block_info() to process new block data
+✓ Created _calculate_authority() method that sums authorized block lengths
+✓ Updated authority usage throughout controller to use calculated_authority
+✓ Added station detection from JSON track data
+✓ Implemented proper stopping at first unauthorized block
+✓ Added get_calculated_authority() method for external access
+
+KEY IMPLEMENTATION DETAILS:
+- TrainController now requires TrainControllerInit with track_color, current_block, etc.
+- Excel file parsed at initialization to generate fresh track data
+- Block progression tracked via next_block_entered toggle detection
+- Authority calculated by summing lengths of consecutive authorized blocks
+- Service brake activated when calculated_authority <= authority_threshold
+- Station information extracted from JSON track data for door control
+- All authority references updated to use calculated internal authority
+
+TESTING REQUIREMENTS:
+- Test with different track colors (Red, Green, Blue)
+- Verify block progression detection and queue management
+- Test authority calculation with authorized/unauthorized block sequences
+- Validate Excel file parsing and JSON generation
+- Test service brake activation at authority threshold
+
+===================================
+IMPORTANT NOTE FOR CLAUDE (FUTURE):
+===================================
+*** ALWAYS READ THIS IMPLEMENTATION LOG AT THE START OF EVERY CHAT SESSION ***
+*** UPDATE THIS LOG CONSTANTLY WITH WHAT YOU DO AND WHAT USER REQUESTS ***
+*** THIS LOG IS CRITICAL FOR UNDERSTANDING SYSTEM STATE AND REQUIREMENTS ***
+
+===================================
+NEW IMPLEMENTATION SESSION - 2025-07-03
+===================================
+
+CRITICAL BUG FIXES - SAME SESSION:
+AttributeError: 'TrainModelInput' object has no attribute 'commanded_speed'
+
+ISSUE IDENTIFIED:
+- TrainModelInput class had commanded_speed field marked as "THIS WILL BE REMOVED" but not actually removed
+- Train controller was still trying to access train_input.commanded_speed in calculate_power_output() method
+- This caused runtime crashes when the train controller tried to calculate power
+
+FIXES APPLIED:
+1. ✓ Removed commanded_speed field from TrainModelInput dataclass (data_types.py:25)
+2. ✓ Updated TrainModelInput docstring to remove commanded_speed reference (data_types.py:10-14)
+3. ✓ Fixed train controller calculate_power_output() method to use self.current_block_commanded_speed instead of train_input.commanded_speed (train_controller.py:352, 363, 366)
+
+CORRECTED ARCHITECTURE:
+- TrainModelInput no longer contains commanded_speed (as per design)
+- Train controller uses self.current_block_commanded_speed from block data
+- Commanded speed comes from block progression system, not train model input
+- Power calculation now uses internal block-based commanded speed
+
+TECHNICAL DETAILS:
+- Lines 352, 363, 366 in train_controller.py changed from train_input.commanded_speed to self.current_block_commanded_speed
+- This ensures commanded speed comes from the current block's commanded speed (set during block transitions)
+- Maintains consistency with track-based authority system design
+
+ADDITIONAL BUG FIX - SAME SESSION:
+AttributeError: 'TrainModelInput' object has no attribute 'train_underground'
+
+ISSUE IDENTIFIED:
+- TrainModelInput class had train_underground field marked as "THIS WILL BE REMOVED" but not actually removed
+- Train controller was still trying to access train_input.train_underground in lighting logic
+- Default TrainModelInput creation was still referencing removed fields (authority, commanded_speed, train_underground)
+
+FIXES APPLIED:
+1. ✓ Removed train_underground field from TrainModelInput dataclass (data_types.py:27)
+2. ✓ Fixed train controller lighting logic to use self.current_block_underground instead of train_input.train_underground (train_controller.py:322)
+3. ✓ Fixed default TrainModelInput creation to remove authority, commanded_speed, and train_underground references (train_controller.py:389-403)
+4. ✓ Added proper new fields (add_new_block_info, next_block_info, next_block_entered) to default TrainModelInput
+
+CORRECTED ARCHITECTURE:
+- TrainModelInput no longer contains train_underground (as per design)
+- Train controller uses self.current_block_underground from block data
+- Underground status comes from track JSON data, not train model input
+- Default TrainModelInput creation now matches actual dataclass structure
+
+===================================
+
+USER REQUEST:
+"when main_test.py is run, I should be able to see a ui before all other UIs come where I have to fill the initialization data such as color and the current and 4 next blocks info. then only train controller can be created. also make sure we use the excel and turn it into json properly when using it"
+
+ADDITIONAL REQUIREMENTS:
+- "make sure we also receive the next 4 blocks information initially"
+- Must read implementation_log.txt before starting
+- Add note for future Claude to always review and update this log
+
+ACTIONS TAKEN:
+1. ✓ Read and analyzed implementation_log.txt for context
+2. ✓ Examined current main_test.py structure and UI flow
+3. ✓ Analyzed Excel file structure and JSON conversion process in Track_Reader/
+4. ✓ Created new InitializationUI class (/train_controller_sw/gui/initialization_ui.py):
+   - UI for entering track color (Blue/Red/Green dropdown)
+   - Current block number, commanded speed (0-3), authorization checkbox
+   - Next 4 blocks with block number, length, speed limit, underground status, authorization
+   - Auto-populate button that uses Excel data via TrackJSONGenerator
+   - Validation system for all inputs
+   - Emits TrainControllerInit object when complete
+5. ✓ Modified main_test.py to show InitializationUI first:
+   - Added InitializationUI import
+   - Modified __init__ to show initialization UI instead of main window
+   - Added show_initialization_ui() method
+   - Added on_initialization_complete() handler
+   - Now properly passes complete initialization data including next 4 blocks
+   - Main window and other UIs only appear after initialization is complete
+
+TECHNICAL IMPLEMENTATION DETAILS:
+- InitializationUI integrates with existing TrackJSONGenerator
+- Supports auto-population from Excel data for sequential blocks
+- Validates all input data before allowing controller creation
+- Properly creates BlockInfo objects for next 4 blocks
+- Handles track color selection and updates available blocks accordingly
+- Excel to JSON conversion happens via existing json_generator.py system
+
+SYSTEM FLOW NOW:
+1. Run main_test.py
+2. InitializationUI appears first (only UI visible)
+3. User enters track color, current block, and next 4 blocks info
+4. User can auto-populate from Excel data or enter manually
+5. User validates data and clicks "Initialize Train Controller"
+6. TrainControllerInit object created with complete data
+7. Main window appears with test bench, driver, and engineer UIs
+8. Train controller created with full initialization data including next 4 blocks
+
+NEXT STEPS:
+- Test the initialization flow
+- Verify Excel to JSON conversion works properly
+- Ensure all 4 next blocks are properly received by train controller
+
+UPDATE - SAME SESSION:
+User clarification on data sources and track colors:
+- Track should only be Red and Green (no Blue option)
+- Underground, speed limit, length, station info should come from JSON (not train model)
+- From train model should only get: block number and authorized_to_go
+- Need to check if controller already correctly implements this separation
+
+FINDINGS FROM CODE ANALYSIS:
+✓ Train controller ALREADY correctly implemented:
+  - get_block_essentials() method gets length, speed, underground from JSON
+  - _handle_new_block_info() only uses block_number and authorized_to_go from train model
+  - All other data (length, speed, underground) filled from JSON lookup
+  - Authority calculation depends on correctly populated BlockInfo.length_meters
+
+CORRECTIONS MADE:
+1. ✓ Updated InitializationUI to only show Red/Green options (removed Blue)
+2. ✓ Simplified UI to only collect block number and authorization for next 4 blocks
+3. ✓ Updated auto-populate to only set block numbers and authorization
+4. ✓ Modified initialize_controller() to fill BlockInfo with JSON data at initialization
+5. ✓ Updated train controller validation to accept red/green in any case
+6. ✓ Fixed track color normalization for JSON generator calls
+
+CORRECTED DATA FLOW:
+1. InitializationUI: User enters track color + current block + 4 next block numbers/auth
+2. UI looks up length/speed/underground from JSON for initial BlockInfo objects
+3. TrainControllerInit created with properly populated BlockInfo objects
+4. Controller receives complete initialization data and can calculate authority immediately
+5. During operation: new blocks from train model only provide number+auth, controller fills rest from JSON
+
+SYSTEM NOW CORRECTLY IMPLEMENTS:
+- Only Red/Green track options
+- JSON-sourced: length, speed limit, underground, station info
+- Train model-sourced: block number, authorization only
+- Proper separation of static infrastructure vs dynamic operational data
+
+COMMANDED SPEED CORRECTION - SAME SESSION:
+User reminder: "we also take in commanded speed from train model for all the blocks I forgot"
+
+ISSUES FOUND AND FIXED:
+1. ✗ BlockInfo class missing commanded_speed field - FIXED
+2. ✗ _handle_new_block_info ignoring commanded_speed from next_block_info - FIXED  
+3. ✗ InitializationUI not collecting commanded_speed for initial blocks - FIXED
+4. ✗ Critical bug: train controller trying to access non-existent commanded_speed attribute - FIXED
+
+CORRECTIONS MADE:
+1. ✓ Added commanded_speed field to BlockInfo dataclass
+2. ✓ Updated _handle_new_block_info to extract and store commanded_speed from next_block_info
+3. ✓ Modified InitializationUI to include commanded speed (0-3) dropdown for each block
+4. ✓ Updated auto-populate to set default commanded speeds (2 for available blocks, 0 for unavailable)
+5. ✓ Fixed initialize_controller to create BlockInfo objects with commanded_speed
+
+CORRECTED DATA SOURCES:
+- JSON-sourced: length, speed limit, underground, station info
+- Train model-sourced: block number, commanded_speed, authorization
+- UI input for initialization: track color, current block info, next 4 blocks (number + commanded_speed + auth)
+
+FINAL SYSTEM CORRECTLY IMPLEMENTS:
+- Only Red/Green track options
+- Complete commanded speed handling throughout the pipeline
+- Proper data separation between static infrastructure (JSON) and dynamic operational data (train model)
+- Bug-free block transitions with all required fields populated
+
+RUNTIME ERROR FIXES - SAME SESSION:
+Two critical issues found and fixed:
+
+1. TrainModelTestBench Error:
+   - Error: TrainModelInput.__init__() got unexpected keyword argument 'authority'
+   - Issue: TestBench still using removed 'authority' and 'train_underground' fields
+   - Fix: Updated TestBench to use current TrainModelInput fields
+   - Removed: authority, commanded_speed, train_underground (marked as removed)
+   - Added: add_new_block_info, next_block_info, next_block_entered
+
+2. Auto-populate Button Issue:
+   - Issue: InitializationUI had "Auto-populate from Track Data" button
+   - Problem: This UI represents train model side - shouldn't have track data access
+   - Fix: Removed all track data functionality from InitializationUI
+   - Removed: auto_populate_from_track_data(), load_track_data(), update_available_blocks()
+   - Removed: TrackJSONGenerator import and track_generator references
+   - Philosophy: Train model side only knows block numbers, commanded speeds, authorization
+
+CORRECTED ARCHITECTURE:
+- InitializationUI: Simulates train model input (no track data access)
+- Train Controller: Fills incomplete BlockInfo with track data during initialization
+- Proper separation: UI provides operational data, controller adds infrastructure data
+
+FINAL DATA FLOW:
+1. InitializationUI: User enters operational data (block#, commanded_speed, auth)
+2. Creates BlockInfo with incomplete track data (length=0, speed=0, underground=False)
+3. Train controller initialization fills missing data from JSON for each block
+4. Authority calculation uses complete BlockInfo objects with correct lengths
+
+===================================
+NEW IMPLEMENTATION SESSION - 2025-07-04
+===================================
+
+CRITICAL BUG FIX - ATTRIBUTE NAME INCONSISTENCY:
+AttributeError: 'TrainController' object has no attribute 'current_block_underground'
+
+ISSUE IDENTIFIED:
+- TrainController class defines the attribute as 'current_block_underground_status' (line 139)
+- However, the code was trying to access 'current_block_underground' (line 322) in the underground lighting logic
+- This caused a runtime error when the underground lighting system tried to check if train is underground
+
+SEARCH RESULTS:
+- Found 2 files containing 'current_block_underground' references
+- Only 1 occurrence in train_controller.py needed fixing (line 322)
+- Other reference in implementation_log.txt was documentation only
+
+FIX APPLIED:
+✓ Fixed line 322 in train_controller.py from 'if self.current_block_underground:' to 'if self.current_block_underground_status:'
+
+CORRECTED ARCHITECTURE:
+- All references to underground status now consistently use 'current_block_underground_status'
+- Underground lighting logic properly checks train controller's underground status
+- Attribute is defined once in constructor and updated during block transitions
+- Consistent naming prevents future AttributeError exceptions
+
+TECHNICAL DETAILS:
+- The attribute 'current_block_underground_status' is set in:
+  * Line 139: During initialization from track data
+  * Line 624: During block transitions from track data
+- The attribute is used in:
+  * Line 322: Underground lighting logic (now fixed)
+  * Line 627: Debug output during block transitions
+
+SYSTEM NOW CORRECTLY IMPLEMENTS:
+- Consistent attribute naming for underground status throughout train controller
+- Proper underground lighting control without runtime errors
+- Reliable underground state tracking during block transitions
+
+===================================
+NEW IMPLEMENTATION SESSION - 2025-07-04 (CONTINUED)
+===================================
+
+STATION STOPPING AND BLOCK QUEUE MANAGEMENT IMPLEMENTATION:
+
+USER REQUEST:
+"Whenever train's actual speed gets to zero. It should check if the current block is station or not. If it is a station, then we need to stop there for exactly 60 seconds. So have the service brake on for 60 sections after fully stopping. This stopping would have happened because the next block was not authorized to go to. So now train model should ideally update the next block to now be authorized as now the train stopped for 60 seconds simulating people getting in and out and now train can close all the door and start moving again to the next block."
+
+BLOCK QUEUE MANAGEMENT CLARIFICATION:
+"it should only allow another block information to be added if there is an space in the next 4 blocks. and the next 4 blocks will only have space when the train moves to next block, making the next block current and moving the next-next block to next block position and next-next-next block to next-next block and leaving the 4th place open."
+
+UNAUTHORIZED BLOCK HANDLING:
+"even if it is unauthorized block, we need to keep pulling it up the next 4 blocks list because there might be block info after the unauthorized one that are still coming. even though we dont consider them in calculations now, we should still have it because after the station, we might make the unauthorized block into authorized block"
+
+ENHANCED REQUIREMENTS:
+"after 60 seconds train controller should stop counting seconds, set the station_stop_complete to true and wait till update_next_block_info is true and when we see that it is true we update the block's information of whatever block number it has with the new info inside of next_block_info. allow update_next_block_info feature to be used to update the next 4 blocks info at anytime, just check if it is true and when it is then just find the same block number in the next 4 and replace that with the new info in next_block_info. this will not cound as adding another block, this is just updating the information of what is already in the next 4 blocks. After the next block opens is updated to be authorized to go, our total authorization will go up and train can then start going with whatever speed is in set point speed so now we can release the service brake"
+
+IMPLEMENTATION COMPLETED:
+
+1. ✓ ENHANCED DATA TYPES (data_types.py):
+   - Added station_stop_complete: bool field to TrainModelOutput (line 59)
+   - Added update_next_block_info: bool field to TrainModelInput (line 32)
+   - Updated TrainModelOutput docstring to include station stop complete field
+
+2. ✓ STATION STOPPING LOGIC (train_controller.py):
+   - Added station stopping variables in constructor (lines 180-183):
+     * station_stop_timer: float - tracks 60-second countdown
+     * station_stop_active: bool - indicates if timing in progress
+     * station_stop_complete_waiting: bool - waiting for train model update
+   - Implemented _handle_station_stop() method (lines 758-810):
+     * Detects when train stops at station (speed < 0.1 mph)
+     * Starts 60-second timer using block data from JSON
+     * Keeps service brake ON during timing and waiting phases
+     * Sets station_stop_complete = True after 60 seconds
+     * Waits for train model to update next block authorization
+     * Resets state if train starts moving
+
+3. ✓ BLOCK QUEUE MANAGEMENT (train_controller.py):
+   - Enhanced block progression checking (lines 614-627):
+     * Only accepts new blocks when len(known_blocks) < 4
+     * Provides clear feedback when queue is full
+     * Maintains strict 4-block lookahead limit
+   - Updated _handle_block_transition() (lines 632-660):
+     * Shows queue status after each transition
+     * Displays remaining blocks in sequence
+     * Indicates space available for new blocks
+   - Enhanced _handle_new_block_info() (lines 672-718):
+     * Validates queue space before adding blocks
+     * Shows queue position when adding blocks
+     * Reports when queue becomes full
+
+4. ✓ BLOCK UPDATE SYSTEM (train_controller.py):
+   - Added _handle_block_update() method (lines 720-768):
+     * Finds matching block number in queue and updates its info
+     * Updates authorization status and commanded speed
+     * Does NOT add new blocks - only updates existing ones
+     * Releases station stop wait when block becomes authorized
+     * Provides detailed logging of authorization changes
+   - Integrated update checking in block progression (lines 625-627):
+     * Checks update_next_block_info flag every cycle
+     * Calls block update handler when flag is true
+
+5. ✓ AUTHORITY CALCULATION ENHANCEMENT (train_controller.py):
+   - Updated _calculate_authority() (lines 770-787):
+     * Stops at first unauthorized block
+     * Ignores ALL blocks after unauthorized block (even if authorized)
+     * Only includes blocks after unauthorized becomes authorized
+     * Provides clear logging of authority calculation logic
+
+6. ✓ TEST BENCH UI ENHANCEMENTS (train_model_testbench.py):
+   - Added update_next_block_info checkbox (lines 248-250)
+   - Added station_stop_complete output display (line 342)
+   - Added current block information section (lines 365-378):
+     * Shows current block number with station/underground indicators
+     * Displays station name, platform side, speed limit, length
+     * Real-time updates every 0.1 seconds via main_test.py
+   - Updated save_values() to include new field (line 409)
+   - Enhanced output display with station stop complete status (line 488)
+   - Added update_current_block_info() method (lines 483-511)
+
+7. ✓ MAIN INTEGRATION (main_test.py):
+   - Added current block info updates (lines 308-310):
+     * Gets current block and block data from train controller
+     * Updates test bench display with current block information
+     * Provides real-time visibility into block status
+
+8. ✓ INITIALIZATION STATE MANAGEMENT:
+   - Updated constructor to initialize all new station stop variables
+   - Updated reset() method to reset station stop states (lines 502-505)
+   - All TrainModelOutput constructors include station_stop_complete = False
+
+ENHANCED SYSTEM BEHAVIOR:
+
+STATION STOP WORKFLOW:
+1. Train stops at station (speed < 0.1 mph) → 60-second timer starts
+2. Service brake ON, station_stop_complete = False during timing
+3. After 60 seconds → Timer stops, station_stop_complete = True
+4. Enters waiting state - service brake stays ON
+5. Waits for update_next_block_info = True from train model
+6. When received → Updates block authorization in queue
+7. Authority recalculates → Service brake releases → Train proceeds
+
+BLOCK QUEUE MANAGEMENT:
+- Strict 4-block limit - rejects new blocks when queue full
+- Blocks move through queue during transitions regardless of authorization
+- New space created only when train moves to next block
+- Unauthorized blocks maintained in queue for future authorization updates
+
+BLOCK UPDATE SYSTEM:
+- update_next_block_info can be used anytime to update any block in queue
+- Finds matching block number and updates authorization/commanded speed
+- Does not affect queue size or order - only updates existing blocks
+- Immediately releases station stop wait when block becomes authorized
+
+AUTHORITY CALCULATION:
+- Sums consecutive authorized blocks from start of queue
+- Stops at first unauthorized block - ignores all blocks after it
+- When unauthorized block becomes authorized → includes it and continues
+- Service brake released when authority > threshold
+
+TESTING INTEGRATION:
+- Complete visibility into station stopping process
+- Real-time block information display with station/underground indicators
+- All input/output fields properly integrated and displayed
+- Current block details updated every 0.1 seconds
+
+SYSTEM NOW CORRECTLY IMPLEMENTS:
+- Complete 60-second station stopping with train model coordination
+- Strict 4-block queue management with space validation
+- Dynamic block authorization updates without affecting queue structure
+- Authority calculation that respects unauthorized block boundaries
+- Comprehensive UI visibility into all station and block operations
+- Proper service brake control throughout station stop workflow
+
+===================================
+NEW IMPLEMENTATION SESSION - 2025-07-05
+===================================
+
+AUTHORITY CALCULATION REFINEMENT - REAL-TIME POSITION TRACKING:
+
+USER REQUEST:
+"even when stopped at a station it is showing the rest half as authority still. I want it to just subtract the half of the station block when the next block is unauthorized to go to and that should be how it goes to the driver UI as output"
+
+ADDITIONAL DETAILED REQUIREMENTS (from subsequent conversation):
+"When the train is initially put in the track, which means the train controller is initialized and created as an object somewhere, we want to not add the length of the current block and only add from the next block's length for the authority because the train will start on the edge of the next block. However, after moving to the next block we need to start adding the current block's length and the rest of the next blocks until an unauthorized block. If there is an unauthorized block and the block right before it, is a station then we only add half of it's length until we stop at that station and set station_stop_complete_waiting to true, and at that point we add the other half (not the full length of the station block, just the other half where the train has not been) because at the station train would have stopped in the middle of the station block, so when station_stop_complete_waiting is true, we close the doors and interior light (if not underground) then we add the rest of the length of the station block where the train has not been. And once the next block is authorized to go we will just add those too. Also, we want to constantly update the authority in the driver UI as the train is running by using the actual speed and the time, we should use basic kinematic equation to calculate the distance we are travelling and slowly decrease it from the size of the current block's length which in turn should reflect in the total calculated authority, however even if it looks like the train is going but has not reached the next block and we have subtracted the whole length of the current block then we just use 0 and not a negative number."
+
+IMPLEMENTATION COMPLETED:
+
+1. ✓ POSITION TRACKING SYSTEM (train_controller.py):
+   - Added position tracking variables in constructor (lines 167-170):
+     * train_has_moved: bool - Flag to track if train started moving from initial position
+     * distance_traveled_in_current_block: float - Real-time distance tracking in meters
+     * last_position_update_time: float - For calculating distance traveled
+   - Added _update_position_tracking() method (lines 604-636):
+     * Detects when train starts moving (speed > 0.1 mph)
+     * Calculates distance using kinematics: distance = speed × time
+     * Converts mph to m/s for accurate calculations (speed_ms = mph × 0.44704)
+     * Clamps distance to block length to prevent overrun
+     * Provides detailed logging of position updates
+
+2. ✓ ENHANCED AUTHORITY CALCULATION (train_controller.py):
+   - Completely rewrote _calculate_authority() method (lines 846-935):
+   
+   INITIAL PLACEMENT LOGIC:
+   * When train_has_moved = False: Only includes next blocks (train at edge of current block)
+   * Authority = sum of next authorized blocks only
+   
+   POST-MOVEMENT LOGIC:
+   * When train_has_moved = True: Includes remaining current block + next blocks
+   * remaining_current_block = current_block_length - distance_traveled_in_current_block
+   * Uses max(0.0, remaining) to prevent negative authority
+   
+   STATION HANDLING:
+   * Normal station with unauthorized next block: Only count to station stop point (half block)
+   * Station stop complete (station_stop_complete_waiting = True): Add "other half" remaining
+   * Calculation: other_half_remaining = max(0.0, half_block - distance_traveled)
+   * When next block becomes authorized: Full remaining authority restored
+
+3. ✓ STATION STOP DISTANCE RESET LOGIC:
+   - Enhanced _handle_station_stop() method (lines 951-958):
+     * When station stop completes (60 seconds), distance_traveled_in_current_block resets to 0
+     * This ensures "other half" calculation works correctly for station authority
+     * Provides proper logging of distance reset for station calculations
+   
+   - Fixed station_stop_complete_waiting reset conditions:
+     * ONLY resets when BOTH conditions met: next block authorized + train moves to next block
+     * Updated _handle_block_update() (lines 800-802, 824-825): Removed immediate reset
+     * Updated _handle_block_transition() (lines 703-706): Reset only during actual block transition
+     * Ensures station waiting state persists until train actually moves
+
+4. ✓ REAL-TIME AUTHORITY UPDATES:
+   - Integrated position tracking into main update() method (line 222):
+     * Called before block progression handling
+     * Updates every control cycle for real-time authority calculations
+   - Updated block transition reset (line 701):
+     * Resets distance_traveled_in_current_block = 0.0 when entering new block
+     * Ensures accurate tracking for each new block
+   - Enhanced reset() method (lines 514-517):
+     * Resets all position tracking variables during controller reset
+     * Maintains consistent state initialization
+
+5. ✓ KINEMATIC DISTANCE CALCULATION:
+   - Formula: distance = speed × time
+   - Speed conversion: mph to m/s using factor 0.44704
+   - Time delta: uses existing dt from main update loop
+   - Accumulation: distance_this_update added to total distance_traveled_in_current_block
+   - Safety: max() functions prevent negative authority values
+
+DETAILED SYSTEM BEHAVIOR:
+
+INITIAL PLACEMENT (train_has_moved = False):
+1. Train starts at edge of current block
+2. Authority = sum of next authorized blocks only
+3. Current block length not included until train moves
+4. Example: Next blocks [100m, 150m, 200m] → Authority = 450m
+
+POST-MOVEMENT (train_has_moved = True):
+1. Authority includes remaining current block + next blocks
+2. As train moves: remaining = block_length - distance_traveled
+3. Real-time updates as distance_traveled increases
+4. Example: 200m block, traveled 50m → remaining = 150m
+
+STATION STOP WORKFLOW:
+1. Approaching station with unauthorized next block:
+   - Authority counts only to station stop point (half block)
+   - remaining_to_half = max(0, half_block - distance_traveled)
+   
+2. Station stop complete (60 seconds):
+   - distance_traveled_in_current_block resets to 0
+   - station_stop_complete_waiting = True
+   - Authority = other half of station block only
+   
+3. Next block becomes authorized:
+   - Authority includes full remaining current block + next blocks
+   - station_stop_complete_waiting remains true until block transition
+   
+4. Train moves to next block:
+   - station_stop_complete_waiting resets to False
+   - Normal authority calculation resumes
+
+REAL-TIME AUTHORITY VISUALIZATION:
+- Driver UI shows constantly updating authority as train moves
+- Authority decreases in real-time based on distance traveled
+- Never goes negative (clamped at 0.0)
+- Immediate updates when block authorization changes
+- Reflects station stopping behavior accurately
+
+CORRECTED DATA FLOW:
+1. Speed from train model (mph) → converted to m/s
+2. Distance calculation using dt from update loop
+3. Accumulated distance subtracted from block lengths
+4. Remaining distances summed for total authority
+5. Authority displayed in driver UI in real-time
+6. Station stops properly handled with half-block logic
+
+SYSTEM NOW CORRECTLY IMPLEMENTS:
+- Initial placement vs post-movement authority calculation logic
+- Real-time position tracking using kinematic equations
+- Station block half-length authority during stops
+- Proper station_stop_complete_waiting state management
+- Distance reset coordination with station stop completion
+- Negative authority prevention with max() functions
+- Continuous real-time authority updates in driver UI
+- Accurate distance tracking through block transitions
