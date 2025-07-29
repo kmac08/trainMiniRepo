@@ -1,0 +1,444 @@
+TRAIN MODEL INTEGRATION GUIDE FOR TRAIN CONTROLLER
+=====================================================
+
+This document explains how to integrate with the Train Controller's update() and get_output() APIs.
+The Train Controller has been redesigned to work with track data from Excel files and only needs
+specific operational data from the Train Model.
+
+OVERVIEW OF SEPARATION OF CONCERNS
+===================================
+
+TRAIN MODEL RESPONSIBILITIES:
+- Dynamic train properties (mass, speed, faults, temperature)
+- Block authorization decisions (traffic control)
+- Station information (current/next station, platform side)
+- Commanded speeds for blocks (operational control)
+- Authority threshold calculation (based on dynamic mass)
+
+TRAIN CONTROLLER RESPONSIBILITIES:
+- Static track infrastructure (block lengths, speed limits, underground status)
+- Authority calculation (summing authorized block lengths)
+- Station stopping logic (60-second timer)
+- Power control (PI controller)
+- Safety systems (emergency brake, service brake)
+
+INITIALIZATION REQUIREMENTS
+============================
+
+Before creating the TrainController, you must provide TrainControllerInit data:
+
+Required Fields:
+- track_color: str ("Red" or "Green") - which track the train is on
+- current_block: int - the block number where train starts
+- current_commanded_speed: int (0, 1, 2, or 3) - initial speed command
+- authorized_current_block: bool - whether current block is authorized
+- next_four_blocks: List[BlockInfo] - the next 4 blocks ahead
+
+Example BlockInfo creation:
+```python
+from train_controller_sw.controller.data_types import BlockInfo
+
+# Create BlockInfo objects (Train Model only provides operational data)
+block1 = BlockInfo(
+    block_number=15,           # Which block this is
+    length_meters=0.0,         # Leave as 0 - Train Controller fills from Excel
+    speed_limit_mph=0.0,       # Leave as 0 - Train Controller fills from Excel  
+    underground=False,         # Leave as False - Train Controller fills from Excel
+    authorized_to_go=True,     # YOUR DECISION - is train allowed in this block?
+    commanded_speed=2          # YOUR DECISION - speed command (0,1,2,3)
+)
+```
+
+WHY ONLY PARTIAL BlockInfo?
+The Train Model should NOT know about track infrastructure (lengths, speed limits, underground).
+The Train Controller will automatically fill in the missing data from the Excel file.
+
+MAIN UPDATE CYCLE - INPUT TO TRAIN CONTROLLER
+==============================================
+
+Call train_controller.update(train_input, driver_input) every cycle.
+
+TRAINMODELINPUT STRUCTURE:
+```python
+TrainModelInput(
+    # CRITICAL: Dynamic train properties
+    fault_status={'signal': False, 'brake': False, 'engine': False},
+    actual_speed=25.5,                    # Current train speed in mph
+    passenger_emergency_brake=False,       # Passenger pulled emergency brake
+    cabin_temperature=72.0,               # Current cabin temperature in Fahrenheit
+    authority_threshold=150.0,            # CRITICAL: YOU must calculate this based on train mass
+    
+    # CRITICAL: Station information (even if 10+ blocks away)
+    next_station="Dormont Junction",      # Name of next station train will reach
+    station_side="right",                 # "left" or "right" - which side platform is on
+    
+    # CRITICAL: Available train IDs for dropdown
+    available_train_ids=[1, 2, 3],       # List of train IDs that can be selected
+    
+    # CRITICAL: Block progression flags
+    add_new_block_info=False,             # Set True when you have new block to add
+    next_block_info={},                   # Dictionary with new block data (see below)
+    next_block_entered=False,             # Toggle this when train enters new block
+    update_next_block_info=False          # Set True when updating existing block authorization
+)
+```
+
+AUTHORITY THRESHOLD CALCULATION:
+You MUST calculate this based on train mass and braking distance.
+Example: If heavier train needs 200 yards to stop, set authority_threshold=200.0
+The Train Controller compares calculated authority with this threshold to activate service brake.
+
+STATION INFORMATION REQUIREMENTS:
+Even if the next station is 20 blocks away, you must provide:
+- next_station: The name of the upcoming station
+- station_side: Which side the platform is on ("left" or "right")
+
+WHY? The Train Controller only knows about the next 4 blocks from track data, but passengers
+need to see station information much earlier. You have the full route information.
+
+BLOCK PROGRESSION SYSTEM
+=========================
+
+The Train Controller maintains a queue of the next 4 blocks. You control this queue:
+
+1. ADDING NEW BLOCKS (add_new_block_info=True):
+When the train moves and there's space in the 4-block queue:
+
+```python
+train_input = TrainModelInput(
+    # ... other fields ...
+    add_new_block_info=True,
+    next_block_info={
+        'block_number': 25,               # Which block this is
+        'commanded_speed': 2,             # Speed command (0,1,2,3) 
+        'authorized_to_go_on_the_block': 1  # 1=authorized, 0=not authorized
+    }
+)
+```
+
+2. UPDATING EXISTING BLOCKS (update_next_block_info=True):
+To change authorization or speed of blocks already in the queue:
+
+```python
+train_input = TrainModelInput(
+    # ... other fields ...
+    update_next_block_info=True,
+    next_block_info={
+        'block_number': 22,               # Must match a block already in queue
+        'commanded_speed': 3,             # New speed command
+        'authorized_to_go_on_the_block': 1  # New authorization status
+    }
+)
+```
+
+3. BLOCK TRANSITIONS (next_block_entered toggle):
+When train physically enters the next block, toggle this flag:
+
+```python
+# If it was False, set to True. If it was True, set to False.
+train_input.next_block_entered = not previous_next_block_entered
+```
+
+The Train Controller detects the toggle change and moves blocks through the queue.
+
+COMMANDED SPEED VALUES:
+- 0 = Stop (0% of speed limit)
+- 1 = Slow (33% of speed limit) 
+- 2 = Medium (67% of speed limit)
+- 3 = Full (100% of speed limit)
+
+STATION STOPPING WORKFLOW
+==========================
+
+When a train stops at a station, this sequence occurs:
+
+1. TRAIN STOPS AT STATION:
+   - Train speed reaches 0 at a station block
+   - Train Controller starts 60-second timer
+   - Service brake stays ON automatically
+   - station_stop_complete in output = False
+
+2. AFTER 60 SECONDS:
+   - Train Controller sets station_stop_complete = True in output
+   - Service brake remains ON (waiting for your action)
+   - Train Controller waits for you to authorize departure
+
+3. YOUR REQUIRED ACTIONS after seeing station_stop_complete=True:
+   
+   A. UPDATE CURRENT BLOCK (the station block):
+   ```python
+   train_input = TrainModelInput(
+       # ... other fields ...
+       update_next_block_info=True,
+       next_block_info={
+           'block_number': 18,           # The current station block number
+           'commanded_speed': 2,         # Change from 0 to desired speed (1,2,3)
+           'authorized_to_go_on_the_block': 1  # Keep as authorized
+       }
+   )
+   ```
+   
+   B. UPDATE NEXT BLOCK (make it authorized):
+   ```python
+   # In next cycle:
+   train_input = TrainModelInput(
+       # ... other fields ...
+       update_next_block_info=True,
+       next_block_info={
+           'block_number': 19,           # The next block after station
+           'commanded_speed': 2,         # Desired speed
+           'authorized_to_go_on_the_block': 1  # Change from 0 to 1 (authorize)
+       }
+   )
+   ```
+
+4. AUTOMATIC DEPARTURE:
+   - Train Controller recalculates authority (now has path forward)
+   - Service brake automatically releases
+   - Train begins moving to next block
+
+WHY THIS SEQUENCE?
+The station stop simulates passengers boarding/alighting. The commanded_speed=0 at station
+means "stop for passengers." Changing it to 2 means "passengers done, ready to go."
+The next block authorization represents traffic control clearing the path ahead.
+
+GETTING OUTPUT FROM TRAIN CONTROLLER
+=====================================
+
+Call these methods every cycle to get data for your systems:
+
+1. train_controller.get_output() -> TrainModelOutput
+   Data for train physics/movement:
+   ```python
+   output = train_controller.get_output()
+   power_kw = output.power_kw                    # Motor power command
+   emergency_brake = output.emergency_brake_status
+   service_brake = output.service_brake_status    
+   doors_left = output.door_left_status
+   doors_right = output.door_right_status
+   headlights = output.headlights_status
+   interior_lights = output.interior_lights_status
+   cabin_temp_setpoint = output.set_cabin_temperature
+   train_id = output.train_id
+   station_stop_complete = output.station_stop_complete  # True after 60s at station
+   ```
+
+2. train_controller.get_output_to_driver() -> OutputToDriver
+   Data for driver UI display:
+   ```python
+   driver_data = train_controller.get_output_to_driver()
+   calculated_authority = driver_data.authority       # Authority in yards
+   current_speed = driver_data.actual_speed          # Your speed input echoed back
+   speed_limit = driver_data.speed_limit             # From Excel track data
+   power_output = driver_data.power_output           # Power command
+   next_station = driver_data.next_station           # Your station input echoed back
+   ```
+
+CRITICAL AUTHORITY SYSTEM
+=========================
+
+AUTHORITY CALCULATION:
+The Train Controller calculates authority by summing the lengths of consecutive authorized blocks.
+This represents how far the train can travel before hitting an unauthorized block.
+
+AUTHORITY vs THRESHOLD:
+- Authority (calculated by Train Controller): How far train CAN go
+- Threshold (provided by you): How far train NEEDS to stop safely
+- When authority <= threshold: Service brake activates automatically
+
+EXAMPLE AUTHORITY CALCULATION:
+```
+Current block: 18 (station, 200m) - authorized, commanded_speed=2
+Next blocks queue:
+- Block 19: 150m, authorized=True  -> ADD 150m
+- Block 20: 100m, authorized=True  -> ADD 100m  
+- Block 21: 200m, authorized=False -> STOP calculation here
+- Block 22: 150m, authorized=True  -> IGNORED (after unauthorized block)
+
+Total Authority = 150 + 100 = 250 meters = 273 yards
+```
+
+If your authority_threshold=300 yards, service brake activates (250 < 300).
+
+REAL-TIME AUTHORITY UPDATES:
+As the train moves through a block, authority decreases in real-time:
+- Block 19 length: 150m
+- Distance traveled in block: 50m  
+- Remaining authority: (150-50) + 100 = 200m = 218 yards
+
+SPECIAL STATION AUTHORITY:
+When approaching a station with unauthorized next block:
+- Authority only counts to middle of station (half block length)
+- After 60-second stop: Authority includes other half of station
+- When next block authorized: Authority includes full remaining distance
+
+ERROR HANDLING AND EDGE CASES
+==============================
+
+QUEUE MANAGEMENT:
+- The 4-block queue has strict size limit
+- Only add blocks when there's space (after train moves forward)
+- Unauthorized blocks stay in queue (don't remove them)
+- You can update any block in queue anytime with update_next_block_info
+
+COMMANDED SPEED CONSTRAINTS:
+- Only values 0,1,2,3 are valid
+- 0 at station = "stop for passengers"
+- 0 elsewhere = emergency stop
+- Train Controller maps these to percentages of speed limit from Excel
+
+AUTHORIZATION LOGIC:
+- authorized_to_go_on_the_block: 1=yes, 0=no
+- Unauthorized blocks stop authority calculation
+- All blocks after unauthorized block are ignored for authority
+- When unauthorized becomes authorized, authority calculation resumes
+
+FAULT HANDLING:
+Engine, signal, or brake faults automatically activate emergency brake and cut power.
+```python
+fault_status = {
+    'signal': True,   # Signal system failure
+    'brake': False,   # Brake system failure  
+    'engine': False   # Engine/motor failure
+}
+```
+
+TIMING CONSIDERATIONS:
+- Update cycle should be fast (10-100 Hz recommended)
+- Authority threshold should account for system delays
+- Station timing is exactly 60.0 seconds (not configurable)
+
+DEBUGGING AND MONITORING
+=========================
+
+CONSOLE OUTPUT:
+The Train Controller prints detailed logs about:
+- Block transitions and queue status
+- Authority calculations with step-by-step breakdown
+- Station stopping progress and state changes
+- Block authorization updates
+
+AUTHORITY MONITORING:
+Watch calculated authority vs threshold:
+```python
+authority = train_controller.get_calculated_authority()  # In yards
+if authority <= your_threshold:
+    # Service brake will be active
+    # Check block authorizations
+```
+
+STATION MONITORING:
+Watch for station_stop_complete flag:
+```python
+output = train_controller.get_output()
+if output.station_stop_complete:
+    # Time to authorize departure
+    # Update commanded speed and next block authorization
+```
+
+COMMON INTEGRATION MISTAKES
+============================
+
+1. FORGETTING AUTHORITY THRESHOLD:
+   Always provide authority_threshold based on current train mass.
+   Don't use a fixed value - it must be dynamic.
+
+2. NOT TOGGLING next_block_entered:
+   Must toggle (not just set to True) when entering new block.
+   Train Controller detects the change, not the value.
+
+3. WRONG STATION INFORMATION:
+   Provide next station even if 20+ blocks away.
+   Train Controller only knows 4 blocks ahead from Excel.
+
+4. INCOMPLETE STATION RESTART:
+   After station_stop_complete=True, you must update BOTH:
+   - Current block commanded_speed (from 0 to movement speed)
+   - Next block authorization (from 0 to 1)
+
+5. ADDING BLOCKS WHEN QUEUE FULL:
+   Only set add_new_block_info=True when train has moved and created space.
+   Check queue status in console output.
+
+6. IGNORING BLOCK INFRASTRUCTURE:
+   Don't set length_meters, speed_limit_mph, underground in BlockInfo.
+   Train Controller fills these from Excel automatically.
+
+EXAMPLE INTEGRATION SEQUENCE
+=============================
+
+INITIALIZATION:
+```python
+# 1. Create initialization data
+init_data = TrainControllerInit(
+    track_color="Red",
+    current_block=12,
+    current_commanded_speed=0,  # Start stopped
+    authorized_current_block=True,
+    next_four_blocks=[
+        BlockInfo(block_number=13, authorized_to_go=True, commanded_speed=2),
+        BlockInfo(block_number=14, authorized_to_go=True, commanded_speed=2), 
+        BlockInfo(block_number=15, authorized_to_go=False, commanded_speed=0),
+        BlockInfo(block_number=16, authorized_to_go=True, commanded_speed=2)
+    ]
+)
+
+# 2. Create train controller
+train_controller = TrainController(init_data)
+```
+
+MAIN LOOP:
+```python
+next_block_entered_state = False  # Track toggle state
+
+while running:
+    # 1. Calculate dynamic threshold based on train mass
+    authority_threshold = calculate_braking_distance(train_mass)
+    
+    # 2. Check if entering new block
+    if train_entered_new_block():
+        next_block_entered_state = not next_block_entered_state
+    
+    # 3. Create train input
+    train_input = TrainModelInput(
+        fault_status={'signal': False, 'brake': False, 'engine': False},
+        actual_speed=get_current_speed(),
+        passenger_emergency_brake=get_passenger_brake(),
+        cabin_temperature=get_cabin_temp(),
+        authority_threshold=authority_threshold,
+        next_station="Union Station", 
+        station_side="left",
+        available_train_ids=[1,2,3],
+        add_new_block_info=has_new_block_to_add(),
+        next_block_info=get_new_block_data() if has_new_block_to_add() else {},
+        next_block_entered=next_block_entered_state,
+        update_next_block_info=has_block_updates(),
+    )
+    
+    # 4. Get driver input from UI
+    driver_input = driver_ui.get_driver_input()
+    
+    # 5. Update train controller
+    train_controller.update(train_input, driver_input)
+    
+    # 6. Get outputs
+    train_output = train_controller.get_output()
+    driver_display = train_controller.get_output_to_driver()
+    
+    # 7. Apply to train physics
+    apply_power(train_output.power_kw)
+    apply_brakes(train_output.service_brake_status, train_output.emergency_brake_status)
+    control_doors(train_output.door_left_status, train_output.door_right_status)
+    
+    # 8. Update driver UI
+    driver_ui.update_display(driver_display)
+    
+    # 9. Handle station stop completion
+    if train_output.station_stop_complete:
+        # Station 60-second timer finished - authorize departure
+        authorize_station_departure(current_block_number)
+```
+
+This integration guide provides everything needed to properly interface with the Train Controller.
+The key is understanding the separation between dynamic operational data (your responsibility)
+and static infrastructure data (Train Controller's responsibility from Excel file).
