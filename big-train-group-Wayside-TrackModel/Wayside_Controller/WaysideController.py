@@ -22,6 +22,10 @@ class WaysideController(QObject):
         self.total_blocks = total_blocks
         self.blocksCovered = blocks_covered.copy() if blocks_covered else [False] * total_blocks
         
+        # Dual PLC support - determine PLC files based on line
+        self.plc_files = self._determine_plc_files(line)
+        self.plc_modules = []
+        
         # Communication objects
         self.ctc_commObj = None  # Set by Master Interface via set_communication_object()
         self.track_CommObj = None  # For future track model integration
@@ -60,16 +64,16 @@ class WaysideController(QObject):
         self.plcModule = None
         self.stopEvent = Event()
         
-        # Load PLC file
-        print(f"[WAYSIDE] Controller {self.plcNum}: About to load PLC file during initialization")
-        load_result = self.load_plc_module()
+        # Load PLC files (dual PLC support)
+        print(f"[WAYSIDE] Controller {self.plcNum}: About to load PLC files during initialization")
+        load_result = self.load_plc_modules()
         print(f"[WAYSIDE] Controller {self.plcNum}: PLC loading result: {load_result}")
-        print(f"[WAYSIDE] Controller {self.plcNum}: PLC module after loading: {self.plcModule is not None}")
+        print(f"[WAYSIDE] Controller {self.plcNum}: PLC modules loaded: {len(self.plc_modules)}")
         
         print(f"Wayside Controller {self.plcNum} initialized for {line} line")
-        print(f"PLC File: {self.plc_file}")
+        print(f"PLC Files: {self.plc_files}")
         print(f"Managing {sum(self.blocksCovered)} blocks out of {total_blocks}")
-        print(f"PLC Module Status: {'LOADED' if self.plcModule is not None else 'NOT LOADED'}")
+        print(f"PLC Modules Status: {len(self.plc_modules)} modules loaded")
 
     # ========== Master Interface Compatibility ==========
     
@@ -109,14 +113,57 @@ class WaysideController(QObject):
             print(f"[WAYSIDE] Error stopping update cycle: {e}")
 
     # ========== PLC Management ==========
+    
+    def _determine_plc_files(self, line: str):
+        """Determine which PLC files to load based on the line."""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        if line.lower() == 'green':
+            return [
+                os.path.join(base_dir, 'GreenLinePlcV1_Part1.py'),
+                os.path.join(base_dir, 'GreenLinePlcV1_Part2.py')
+            ]
+        elif line.lower() == 'red':
+            return [
+                os.path.join(base_dir, 'RedLinePlcV1_Part1.py'),
+                os.path.join(base_dir, 'RedLinePlcV1_Part2.py')
+            ]
+        else:
+            # Fallback to original single PLC file
+            return [self.plc_file] if self.plc_file else []
+    
+    def load_plc_modules(self):
+        """Dynamically load multiple PLC Python files as modules."""
+        self.plc_modules = []
+        
+        for plc_file in self.plc_files:
+            try:
+                if not os.path.exists(plc_file):
+                    print(f"[WAYSIDE] Warning: PLC file not found: {plc_file}")
+                    continue
+                    
+                module_name = os.path.basename(plc_file)
+                print(f"[WAYSIDE] Loading PLC Module: {module_name}")
+                spec = importlib.util.spec_from_file_location(module_name, plc_file)
+                plc_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(plc_module)
+                self.plc_modules.append(plc_module)
+                print(f"[WAYSIDE] Successfully loaded: {module_name}")
+                
+            except Exception as e:
+                print(f"[WAYSIDE] Error loading PLC file {plc_file}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Maintain backward compatibility
+        if len(self.plc_modules) > 0:
+            self.plcModule = self.plc_modules[0]  # First module for compatibility
+        
+        return len(self.plc_modules) > 0
+    
     def load_plc_module(self):
-        """Dynamically load a Python file as a module."""
-        self.module_name = os.path.basename(self.plc_file)
-        print("Module Name: " + self.module_name)
-        spec = importlib.util.spec_from_file_location(self.module_name, self.plc_file)
-        plc_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(plc_module)
-        self.plcModule = plc_module
+        """Legacy method - maintained for backward compatibility."""
+        return self.load_plc_modules()
     # ========== CTC Communication Functions ==========
     
     def command_train(self, suggestedSpeed: List[int], authority: List[int], 
@@ -218,7 +265,7 @@ class WaysideController(QObject):
         
 
         # 3. Run PLC logic if loaded
-        if self.plcModule is not None:
+        if len(self.plc_modules) > 0:
             try:
                 # 1. Process CTC commands (copy CTC inputs to working arrays)
                 self.process_ctc_commands()
@@ -226,18 +273,30 @@ class WaysideController(QObject):
                 # 2. Get data from track model (if available)
                 self.receive_from_track_model()
                 
-                # Call PLC with Green Line signature (standardized for all PLCs)
-                # main(stop_event, block_occupancy, speed, authority, switches_actual, 
-                #      traffic_lights_actual, crossings_actual, block_numbers)
-                self.plcModule.main(
-                    self.block_occupancy, 
-                    self.speed, 
-                    self.authorities, 
-                    self.switch_positions, 
-                    self.traffic_lights, 
-                    self.railroad_crossings,
-                    self.block_numbers
-                )
+                # Run all PLC modules (dual PLC support)
+                for i, plc_module in enumerate(self.plc_modules):
+                    try:
+                        print(f"[WAYSIDE] Running PLC module {i+1}/{len(self.plc_modules)}")
+                        # Call PLC with standardized signature
+                        # main(block_occupancy, speed, authority, switches_actual, 
+                        #      traffic_lights_actual, crossings_actual, block_numbers)
+                        plc_module.main(
+                            self.block_occupancy, 
+                            self.speed, 
+                            self.authorities, 
+                            self.switch_positions, 
+                            self.traffic_lights, 
+                            self.railroad_crossings,
+                            self.block_numbers
+                        )
+                        print(f"[WAYSIDE] PLC module {i+1} executed successfully")
+                        
+                    except Exception as e:
+                        print(f"[WAYSIDE] ERROR running PLC module {i+1}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Continue with other modules even if one fails
+                
                 # 4. Send commands to track model (if available)
                 self.send_commands_to_track_model()
                 
@@ -246,13 +305,13 @@ class WaysideController(QObject):
 
                 
             except Exception as e:
-                print(f"[WAYSIDE] ERROR running PLC for Controller {self.plcNum}: {e}")
-                print(f"[WAYSIDE] PLC module will remain loaded despite execution error")
+                print(f"[WAYSIDE] ERROR in PLC execution cycle for Controller {self.plcNum}: {e}")
+                print(f"[WAYSIDE] PLC modules will remain loaded despite execution error")
                 import traceback
                 traceback.print_exc()
-                # Don't set self.plcModule = None here - keep it loaded even if execution fails
+                # Don't clear self.plc_modules here - keep them loaded even if execution fails
         else:
-            print(f"[WAYSIDE] Controller {self.plcNum}: No PLC module loaded")
+            print(f"[WAYSIDE] Controller {self.plcNum}: No PLC modules loaded")
 
         
 
@@ -279,7 +338,9 @@ class WaysideController(QObject):
             'line': self.line,
             'operational': self.isOperational,
             'time_manager_connected': self.time_manager is not None,
-            'plc_loaded': self.plcModule is not None,
+            'plc_loaded': len(self.plc_modules) > 0,
+            'plc_modules_count': len(self.plc_modules),
+            'plc_files': self.plc_files,
             'timer_running': self.check_timer.isActive(),
             'blocks_managed': sum(self.blocksCovered),
             'occupied_blocks': sum(self.block_occupancy),
